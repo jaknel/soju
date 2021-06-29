@@ -254,10 +254,15 @@ func init() {
 		"user": {
 			children: serviceCommandSet{
 				"create": {
-					usage:  "-username <username> -password <password> [-admin]",
+					usage:  "-username <username> -password <password> [-realname <realname>] [-admin]",
 					desc:   "create a new soju user",
 					handle: handleUserCreate,
 					admin:  true,
+				},
+				"update": {
+					usage:  "[-password <password>] [-realname <realname>]",
+					desc:   "update the current user",
+					handle: handleUserUpdate,
 				},
 				"delete": {
 					usage:  "<username>",
@@ -266,12 +271,6 @@ func init() {
 					admin:  true,
 				},
 			},
-			admin: true,
-		},
-		"change-password": {
-			usage:  "<new password>",
-			desc:   "change your password",
-			handle: handlePasswordChange,
 		},
 		"channel": {
 			children: serviceCommandSet{
@@ -730,27 +729,11 @@ func handleServiceSASLReset(dc *downstreamConn, params []string) error {
 	return nil
 }
 
-func handlePasswordChange(dc *downstreamConn, params []string) error {
-	if len(params) != 1 {
-		return fmt.Errorf("expected exactly one argument")
-	}
-
-	hashed, err := bcrypt.GenerateFromPassword([]byte(params[0]), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("failed to hash password: %v", err)
-	}
-	if err := dc.user.updatePassword(string(hashed)); err != nil {
-		return err
-	}
-
-	sendServicePRIVMSG(dc, "password updated")
-	return nil
-}
-
 func handleUserCreate(dc *downstreamConn, params []string) error {
 	fs := newFlagSet()
 	username := fs.String("username", "", "")
 	password := fs.String("password", "", "")
+	realname := fs.String("realname", "", "")
 	admin := fs.Bool("admin", false, "")
 
 	if err := fs.Parse(params); err != nil {
@@ -771,6 +754,7 @@ func handleUserCreate(dc *downstreamConn, params []string) error {
 	user := &User{
 		Username: *username,
 		Password: string(hashed),
+		Realname: *realname,
 		Admin:    *admin,
 	}
 	if _, err := dc.srv.createUser(user); err != nil {
@@ -778,6 +762,38 @@ func handleUserCreate(dc *downstreamConn, params []string) error {
 	}
 
 	sendServicePRIVMSG(dc, fmt.Sprintf("created user %q", *username))
+	return nil
+}
+
+func handleUserUpdate(dc *downstreamConn, params []string) error {
+	var password, realname *string
+	fs := newFlagSet()
+	fs.Var(stringPtrFlag{&password}, "password", "")
+	fs.Var(stringPtrFlag{&realname}, "realname", "")
+
+	if err := fs.Parse(params); err != nil {
+		return err
+	}
+
+	// copy the user record because we'll mutate it
+	record := dc.user.User
+
+	if password != nil {
+		hashed, err := bcrypt.GenerateFromPassword([]byte(*password), bcrypt.DefaultCost)
+		if err != nil {
+			return fmt.Errorf("failed to hash password: %v", err)
+		}
+		record.Password = string(hashed)
+	}
+	if realname != nil {
+		record.Realname = *realname
+	}
+
+	if err := dc.user.updateUser(&record); err != nil {
+		return err
+	}
+
+	sendServicePRIVMSG(dc, fmt.Sprintf("updated user %q", dc.user.Username))
 	return nil
 }
 
